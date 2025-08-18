@@ -1,0 +1,3 @@
+[submodule "Bloxstrap.Web.Common"]
+	path = Bloxstrap.Web.Common
+	url = https://github.com/bloxstraplabs/web-common.git

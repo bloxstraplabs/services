@@ -1,0 +1,31 @@
+services:
+  bloxstrap.services:
+    image: ${DOCKER_REGISTRY-}bloxstrapservices
+    build:
+      context: Bloxstrap.Services
+      dockerfile: Dockerfile
+  
+  influxdb:
+    image: influxdb:2
+    ports:
+      - 8086:8086
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: dockercomposedebug
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: aGVsbG8gdGhlcmU=
+      DOCKER_INFLUXDB_INIT_ORG: test-org
+      DOCKER_INFLUXDB_INIT_BUCKET: test-bucket
+    volumes:
+      - type: tmpfs
+        target: /var/lib/influxdb2
+      - type: tmpfs
+        target: /etc/influxdb2
+
+  postgres:
+    image: postgres:15.4
+    restart: always
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_PASSWORD: password
