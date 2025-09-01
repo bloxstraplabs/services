@@ -9,8 +9,6 @@ using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
 
-using System.Text.Json;
-
 namespace Bloxstrap.Services.Controllers
 {
     [Route("[controller]")]
@@ -25,16 +23,31 @@ namespace Bloxstrap.Services.Controllers
             new StatPoint
             {
                 Name = "installAction",
-                Bucket = "bloxstrap-30d",
+                Bucket = "bloxstrap-90d",
                 Values = ["install", "upgrade", "uninstall"]
             },
 
             new StatPoint
             {
                 Name = "robloxChannel",
-                Bucket = "bloxstrap-14d"
+                Bucket = "bloxstrap-14d",
+                BucketPublic = "bloxstrap-14d-public"
             }
         ];
+
+        private async Task<bool> IsHttpRequestSuccessCached(TimeSpan timeSpan, string key, string url)
+        {
+            if (!memoryCache.TryGetValue(key, out bool result))
+            {
+                var httpClient = httpClientFactory.CreateClient();
+                var response = await httpClient.GetAsync(url);
+
+                result = response.IsSuccessStatusCode;
+                memoryCache.Set(key, result, timeSpan);
+            }
+
+            return result;
+        }
 
         [HttpGet("post")]
         public async Task<IActionResult> Post(string? key, string? value)
@@ -47,6 +60,8 @@ namespace Bloxstrap.Services.Controllers
             if (statPoint is null || statPoint.Values is not null && !statPoint.Values.Contains(value))
                 return BadRequest();
 
+            List<string> buckets = [statPoint.Bucket];
+
             if (statPoint.Name == "robloxChannel")
             {
                 value = value.ToLowerInvariant();
@@ -54,39 +69,41 @@ namespace Bloxstrap.Services.Controllers
                 if (value[0] != 'z')
                     return BadRequest();
 
-                string validationCacheKey = $"validation-channel-{value}";
+                bool valid = await IsHttpRequestSuccessCached(
+                    TimeSpan.FromDays(1), 
+                    $"channel-{value}-valid", 
+                    $"https://clientsettings.roblox.com/v2/settings/application/PCClientBootstrapper/bucket/{value}"
+                );
 
-                if (!memoryCache.TryGetValue(validationCacheKey, out bool exists))
-                {
-                    var httpClient = httpClientFactory.CreateClient();
-
-                    // TODO: retries on errored requests
-                    var response = await httpClient.GetFromJsonAsync<JsonDocument>($"https://clientsettings.roblox.com/v2/settings/application/PCClientBootstrapper/bucket/{value}");
-                    
-                    exists = response!.RootElement.GetProperty("applicationSettings").ValueKind != JsonValueKind.Null;
-
-                    memoryCache.Set(validationCacheKey, exists, DateTime.Now.AddDays(1));
-                }
-
-                if (!exists)
+                if (!valid)
                 {
                     logger.LogWarning("Requested nonexistent channel ({Channel})", value);
                     return BadRequest();
                 }
+
+                bool publicChannel = await IsHttpRequestSuccessCached(
+                    TimeSpan.FromMinutes(30),
+                    $"channel-{value}-public", 
+                    $"https://clientsettings.roblox.com/v2/client-version/WindowsPlayer/channel/{value}"
+                );
+
+                if (publicChannel)
+                    buckets.Add(statPoint.BucketPublic);
             }
 
-            string influxBucket = statPoint.Bucket;
-
-            if (env.IsDevelopment())
-                influxBucket = "test-bucket";
-
-            // TODO: batching? (won't know if necessary yet until channel analytics fill up)
+            // TODO: batching?
+            // batching data here could cause potential loss of data, maybe we could do
+            // it in a cron job retroactively instead?
             var point = PointData.Measurement(key)
                     .Field(value, 1)
                     .Tag("version", HttpContext.Items["ClientVersion"]!.ToString())
-                    .Timestamp(DateTime.UtcNow, WritePrecision.S);
+                    .Timestamp(DateTime.UtcNow, WritePrecision.Ms);
 
-            await influxDBClient.GetWriteApiAsync().WritePointAsync(point, influxBucket);
+            if (env.IsDevelopment())
+                buckets = ["test-bucket"];
+
+            foreach (string bucket in buckets)
+                await influxDBClient.GetWriteApiAsync().WritePointAsync(point, bucket);
 
             return Ok();
         }
@@ -95,6 +112,7 @@ namespace Bloxstrap.Services.Controllers
         public async Task<IActionResult> PostException()
         {
             // TODO: matt's v2 code
+            // TODO: client website
             using var sr = new StreamReader(Request.Body);
             string trace = await sr.ReadToEndAsync();
 
@@ -104,7 +122,7 @@ namespace Bloxstrap.Services.Controllers
             if (trace.Length >= 1024*50)
             {
                 logger.LogWarning("Exception post dropped because it was too big ({Bytes} bytes)", trace.Length);
-                return BadRequest();
+                return StatusCode(413);
             }
 
             await dbContext.ExceptionReports.AddAsync(new()

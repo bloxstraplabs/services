@@ -4,14 +4,26 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 
+using Bloxstrap.Services.Controllers;
 using Bloxstrap.Services.Data;
 
 using InfluxDB.Client;
+
+using Polly;
+using Polly.Extensions.Http;
+using Polly.Retry;
 
 namespace Bloxstrap.Services
 {
     public class Program
     {
+        static AsyncRetryPolicy<HttpResponseMessage> GetHttpPolicy()
+        {
+            return HttpPolicyExtensions
+                .HandleTransientHttpError()
+                .WaitAndRetryAsync(5, _ => TimeSpan.FromSeconds(5));
+        }
+
         public static void Main(string[] args)
         {
             var builder = WebApplication.CreateBuilder(args);
@@ -22,7 +34,7 @@ namespace Bloxstrap.Services
             builder.Services.AddHealthChecks();
             builder.Services.AddDbContext<ApplicationDbContext>();
             builder.Services.AddMemoryCache();
-            builder.Services.AddHttpClient();
+            builder.Services.AddHttpClient<MetricsController>().AddPolicyHandler(GetHttpPolicy());
 
             builder.Services.AddSingleton<IInfluxDBClient, InfluxDBClient>(x =>
             {

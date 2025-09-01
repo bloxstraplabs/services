@@ -7,5 +7,7 @@
         public List<string>? Values { get; set; }
 
         public string Bucket { get; set; } = "bloxstrap";
+
+        public string BucketPublic { get; set; } = "bloxstrap";
     }
 }
