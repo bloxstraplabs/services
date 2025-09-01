@@ -16,42 +16,25 @@ namespace Bloxstrap.Services.Controllers
     [Route("[controller]")]
     [ApiController]
     [EnableRateLimiting("metrics")]
-    public partial class MetricsController : ControllerBase
+    public partial class MetricsController(IInfluxDBClient influxDBClient, IMemoryCache memoryCache,
+        IHttpClientFactory httpClientFactory, ApplicationDbContext dbContext,
+        ILogger<MetricsController> logger, IWebHostEnvironment env) : ControllerBase
     {
-        private readonly IInfluxDBClient _influxDBClient;
-        private readonly IMemoryCache _memoryCache;
-        private readonly IHttpClientFactory _httpClientFactory;
-        private readonly ApplicationDbContext _dbContext;
-        private readonly ILogger<MetricsController> _logger;
-        private readonly IWebHostEnvironment _env;
-
         private readonly List<StatPoint> _statPoints = 
         [
             new StatPoint
             {
                 Name = "installAction",
-                Bucket = "bloxstrap",
+                Bucket = "bloxstrap-30d",
                 Values = ["install", "upgrade", "uninstall"]
             },
 
             new StatPoint
             {
                 Name = "robloxChannel",
-                Bucket = "bloxstrap-eph-7d"
+                Bucket = "bloxstrap-14d"
             }
         ];
-
-        public MetricsController(IInfluxDBClient influxDBClient, IMemoryCache memoryCache, 
-            IHttpClientFactory httpClientFactory, ApplicationDbContext dbContext,
-            ILogger<MetricsController> logger, IWebHostEnvironment env)
-        {
-            _influxDBClient = influxDBClient;
-            _memoryCache = memoryCache;
-            _httpClientFactory = httpClientFactory;
-            _dbContext = dbContext;
-            _logger = logger;
-            _env = env;
-        }
 
         [HttpGet("post")]
         public async Task<IActionResult> Post(string? key, string? value)
@@ -73,37 +56,37 @@ namespace Bloxstrap.Services.Controllers
 
                 string validationCacheKey = $"validation-channel-{value}";
 
-                if (!_memoryCache.TryGetValue(validationCacheKey, out bool exists))
+                if (!memoryCache.TryGetValue(validationCacheKey, out bool exists))
                 {
-                    var httpClient = _httpClientFactory.CreateClient();
+                    var httpClient = httpClientFactory.CreateClient();
 
+                    // TODO: retries on errored requests
                     var response = await httpClient.GetFromJsonAsync<JsonDocument>($"https://clientsettings.roblox.com/v2/settings/application/PCClientBootstrapper/bucket/{value}");
                     
                     exists = response!.RootElement.GetProperty("applicationSettings").ValueKind != JsonValueKind.Null;
 
-                    _memoryCache.Set(validationCacheKey, exists, DateTime.Now.AddDays(1));
+                    memoryCache.Set(validationCacheKey, exists, DateTime.Now.AddDays(1));
                 }
 
                 if (!exists)
                 {
-                    _logger.LogInformation("Requested nonexistent channel ({Channel})", value);
+                    logger.LogWarning("Requested nonexistent channel ({Channel})", value);
                     return BadRequest();
                 }
             }
 
             string influxBucket = statPoint.Bucket;
 
-            if (_env.IsDevelopment())
+            if (env.IsDevelopment())
                 influxBucket = "test-bucket";
 
-            // TODO: batching
-            // TODO: proper use of measurement property (wtf was i doing?)
-            var point = PointData.Measurement("metrics")
-                    .Field(key, value)
+            // TODO: batching? (won't know if necessary yet until channel analytics fill up)
+            var point = PointData.Measurement(key)
+                    .Field(value, 1)
                     .Tag("version", HttpContext.Items["ClientVersion"]!.ToString())
                     .Timestamp(DateTime.UtcNow, WritePrecision.S);
 
-            await _influxDBClient.GetWriteApiAsync().WritePointAsync(point, influxBucket);
+            await influxDBClient.GetWriteApiAsync().WritePointAsync(point, influxBucket);
 
             return Ok();
         }
@@ -111,6 +94,7 @@ namespace Bloxstrap.Services.Controllers
         [HttpPost("post-exception")]
         public async Task<IActionResult> PostException()
         {
+            // TODO: matt's v2 code
             using var sr = new StreamReader(Request.Body);
             string trace = await sr.ReadToEndAsync();
 
@@ -119,17 +103,17 @@ namespace Bloxstrap.Services.Controllers
 
             if (trace.Length >= 1024*50)
             {
-                _logger.LogInformation("Exception post dropped because it was too big ({Bytes} bytes)", trace.Length);
+                logger.LogWarning("Exception post dropped because it was too big ({Bytes} bytes)", trace.Length);
                 return BadRequest();
             }
 
-            await _dbContext.ExceptionReports.AddAsync(new()
+            await dbContext.ExceptionReports.AddAsync(new()
             {
                 Timestamp = DateTime.UtcNow,
                 Trace = trace
             });
 
-            await _dbContext.SaveChangesAsync();
+            await dbContext.SaveChangesAsync();
 
             return Ok();
         }

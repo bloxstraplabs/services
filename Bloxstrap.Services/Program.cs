@@ -37,10 +37,8 @@ namespace Bloxstrap.Services
 
             builder.Services.Configure<ForwardedHeadersOptions>(options =>
             {
-                options.ForwardedHeaders =
-                    ForwardedHeaders.XForwardedFor
-                    | ForwardedHeaders.XForwardedProto
-                    | ForwardedHeaders.XForwardedHost;
+                options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
+                options.ForwardedForHeaderName = "Cf-Connecting-Ip";
             });
 
             builder.Services.AddRateLimiter(options =>
@@ -74,7 +72,7 @@ namespace Bloxstrap.Services
                 {
                     string ua = uaHeader[0]!;
 
-                    var match = Regex.Match(ua, @"Bloxstrap\/([0-9\.]+) \((Production|Build [a-zA-Z0-9=+\/]+|Artifact [0-9a-f]{40}, [a-zA-Z0-9\/\-]+)\)");
+                    var match = Regex.Match(ua, @"^Bloxstrap\/([0-9\.]{5}) \((Production|Build [a-zA-Z0-9=+\/]+|Artifact [0-9a-f]{40}, [a-zA-Z0-9\/\-]+)\)$");
 
                     if (match.Success)
                     {
@@ -91,16 +89,14 @@ namespace Bloxstrap.Services
                 return Results.BadRequest();
             });
 
-            app.Map("/", () => { return Results.Redirect("https://bloxstraplabs.com"); });
+            app.MapGet("/", () => { return Results.Redirect("https://bloxstraplabs.com"); });
             app.MapHealthChecks("/health");
 
             if (app.Environment.IsDevelopment())
             {
-                using (var scope = app.Services.CreateScope())
-                {
-                    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                    db.Database.Migrate();
-                }
+                using var scope = app.Services.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                db.Database.Migrate();
             }
 
             app.Run();
