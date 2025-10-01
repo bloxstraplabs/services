@@ -16,7 +16,7 @@ publishdir=$projectdir/bin/Release/net8.0/linux-x64/publish
 remotedir=/var/www/bloxstraplabs.com/$sub
 service=$sub.bloxstraplabs.com.service
 
-rm -r $publishdir
+rm -rf $publishdir
 dotnet publish $projectdir -c Release -r linux-x64 --no-self-contained
 dotnet ef migrations bundle -p $projectdir -r linux-x64 -o $publishdir/efbundle
 scp -r $publishdir $machine:$remotedir.tmp
@@ -25,4 +25,5 @@ cp -p $remotedir/appsettings.Production.json $remotedir.tmp/appsettings.Producti
 rm -r $remotedir;\
 mv $remotedir.tmp $remotedir;\
 sudo systemctl start $service;\
+journalctl -ef -u $service;\
 systemctl status $service;"

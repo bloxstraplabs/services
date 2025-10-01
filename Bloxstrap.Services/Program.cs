@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
 
@@ -15,7 +16,7 @@ using Polly.Retry;
 
 namespace Bloxstrap.Services
 {
-    public class Program
+    public partial class Program
     {
         static AsyncRetryPolicy<HttpResponseMessage> GetHttpPolicy()
         {
@@ -31,10 +32,14 @@ namespace Bloxstrap.Services
             // Add services to the container.
 
             builder.Services.AddControllers();
-            builder.Services.AddHealthChecks();
             builder.Services.AddDbContext<ApplicationDbContext>();
             builder.Services.AddMemoryCache();
             builder.Services.AddHttpClient<MetricsController>().AddPolicyHandler(GetHttpPolicy());
+
+            // todo: influxdb health checks
+            // the health check framework isn't suitable for us and needs to be forked
+            builder.Services.AddHealthChecks()
+                .AddNpgSql(builder.Configuration.GetConnectionString("Postgres")!);
 
             builder.Services.AddSingleton<IInfluxDBClient, InfluxDBClient>(x =>
             {
@@ -49,8 +54,16 @@ namespace Bloxstrap.Services
 
             builder.Services.Configure<ForwardedHeadersOptions>(options =>
             {
+                string? forwardHeader = builder.Configuration["ProxyConfig:ForwardedForHeader"];
+                string? proxyAddress = builder.Configuration["ProxyConfig:ProxyAddress"];
+
                 options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
-                options.ForwardedForHeaderName = "Cf-Connecting-Ip";
+
+                if (forwardHeader is not null)
+                    options.ForwardedForHeaderName = forwardHeader;
+
+                if (proxyAddress is not null)
+                    options.KnownProxies.Add(IPAddress.Parse(proxyAddress));
             });
 
             builder.Services.AddRateLimiter(options =>
@@ -83,8 +96,7 @@ namespace Bloxstrap.Services
                 if (uaHeader.Count != 0)
                 {
                     string ua = uaHeader[0]!;
-
-                    var match = Regex.Match(ua, @"^Bloxstrap\/([0-9\.]{5}) \((Production|Build [a-zA-Z0-9=+\/]+|Artifact [0-9a-f]{40}, [a-zA-Z0-9\/\-]+)\)$");
+                    var match = UARegex().Match(ua);
 
                     if (match.Success)
                     {
@@ -101,7 +113,7 @@ namespace Bloxstrap.Services
                 return Results.BadRequest();
             });
 
-            app.MapGet("/", () => { return Results.Redirect("https://bloxstraplabs.com"); });
+            app.MapGet("/", () => Results.Redirect("https://bloxstraplabs.com"));
             app.MapHealthChecks("/health");
 
             if (app.Environment.IsDevelopment())
@@ -113,5 +125,8 @@ namespace Bloxstrap.Services
 
             app.Run();
         }
+
+        [GeneratedRegex(@"^Bloxstrap\/([0-9\.]{5,6}) \((Production|Build [a-zA-Z0-9=+\/]+|Artifact [0-9a-f]{40}, [a-zA-Z0-9\/\-]+)\)$")]
+        private static partial Regex UARegex();
     }
 }
